@@ -16,9 +16,21 @@ return new class extends Migration
             $table->string('name');
             $table->string('email')->unique();
             $table->timestamp('email_verified_at')->nullable();
-            $table->string('password');
+            $table->string('password')->nullable();
+            $table->json('groups')->nullable();
+            $table->unsignedInteger('mailbox_limit')->default(15);
+            $table->unsignedInteger('alias_limit')->default(30);
             $table->rememberToken();
             $table->timestamps();
+        });
+        Schema::create('oauth_identities', function (Blueprint $table) {
+            $table->id();
+            $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+            $table->string('provider');
+            $table->string('provider_sub');
+            $table->timestamps();
+
+            $table->unique(['provider', 'provider_sub']);
         });
 
         Schema::create('password_reset_tokens', function (Blueprint $table) {
@@ -43,6 +55,7 @@ return new class extends Migration
     public function down(): void
     {
         Schema::dropIfExists('users');
+        Schema::dropIfExists('oauth_identities');
         Schema::dropIfExists('password_reset_tokens');
         Schema::dropIfExists('sessions');
     }
