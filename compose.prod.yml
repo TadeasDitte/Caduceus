@@ -1,0 +1,125 @@
+# Production stack.
+#
+#   docker compose -f compose.prod.yml up -d --build
+#
+# Application code and compiled assets are baked into the images; nothing is
+# bind-mounted. Configuration comes from .env, which must be a production one
+# (APP_ENV=production, APP_DEBUG=false, a real APP_KEY). Host names are
+# overridden here so the same file works whether or not it targets Docker.
+#
+# The php-fpm entrypoint runs migrations and caches config/routes/views on
+# boot; the queue worker waits for it to become healthy before starting.
+
+# A distinct project name keeps production containers, networks and volumes
+# from colliding with a development stack on the same host.
+name: caduceus-production
+
+x-php-build: &php-build
+    context: .
+    dockerfile: ./docker/common/Dockerfile
+
+x-app-env: &app-env
+    DB_HOST: postgres
+    DB_PORT: 5432
+    REDIS_HOST: redis
+    REDIS_PORT: 6379
+
+services:
+    nginx:
+        image: caduceus-nginx:production
+        build:
+            <<: *php-build
+            target: nginx
+        restart: unless-stopped
+        ports:
+            - "${APP_PORT:-8000}:8000"
+        networks:
+            - caduceus
+        depends_on:
+            php-fpm:
+                condition: service_healthy
+
+    php-fpm:
+        # Same image as the queue worker; the explicit tag stops Compose from
+        # building it twice.
+        image: caduceus-app:production
+        build:
+            <<: *php-build
+            target: production
+        restart: unless-stopped
+        env_file:
+            - .env
+        environment: *app-env
+        volumes:
+            - laravel-storage:/var/www/storage
+        networks:
+            - caduceus
+        healthcheck:
+            test: ["CMD-SHELL", "php-fpm-healthcheck || exit 1"]
+            interval: 10s
+            timeout: 5s
+            retries: 3
+            start_period: 60s
+        depends_on:
+            postgres:
+                condition: service_healthy
+
+    queue:
+        image: caduceus-app:production
+        build:
+            <<: *php-build
+            target: production
+        restart: unless-stopped
+        command: php artisan queue:work --tries=3 --max-time=3600
+        env_file:
+            - .env
+        environment:
+            <<: *app-env
+            # php-fpm has already migrated by the time this starts.
+            RUN_MIGRATIONS: "false"
+        volumes:
+            - laravel-storage:/var/www/storage
+        networks:
+            - caduceus
+        depends_on:
+            php-fpm:
+                condition: service_healthy
+
+    postgres:
+        image: postgres:17
+        restart: unless-stopped
+        user: postgres
+        environment:
+            POSTGRES_DB: ${DB_DATABASE:-caduceus}
+            POSTGRES_USER: ${DB_USERNAME:-caduceus}
+            POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in your .env file}
+        volumes:
+            - postgres-data:/var/lib/postgresql/data
+        networks:
+            - caduceus
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-caduceus} -d ${DB_DATABASE:-caduceus}"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    redis:
+        image: redis:alpine
+        restart: unless-stopped
+        volumes:
+            - redis-data:/data
+        networks:
+            - caduceus
+        healthcheck:
+            test: ["CMD", "redis-cli", "ping"]
+            interval: 10s
+            timeout: 5s
+            retries: 3
+
+networks:
+    caduceus:
+
+volumes:
+    postgres-data:
+    redis-data:
+    laravel-storage:

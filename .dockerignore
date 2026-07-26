@@ -1,0 +1,53 @@
+# Version control & CI
+.git
+.github
+.gitattributes
+.gitignore
+
+# Dependencies — installed inside the image
+node_modules
+vendor
+.pnpm-store
+
+# Local environment & secrets — provided at runtime
+.env
+.env.*
+
+# Compose files & helper scripts
+compose.dev.yml
+compose.prod.yml
+launchdev.sh
+
+# Generated build output — regenerated inside the image
+bootstrap/cache/*.php
+bootstrap/ssr
+public/build
+public/hot
+public/storage
+public/fonts-manifest.dev.json
+resources/js/actions
+resources/js/routes
+resources/js/wayfinder
+
+# Runtime state — the directory structure is kept, the contents are not
+database/database.sqlite
+storage/framework/cache/data/*
+!storage/framework/cache/data/.gitignore
+storage/framework/sessions/*
+!storage/framework/sessions/.gitignore
+storage/framework/testing/*
+!storage/framework/testing/.gitignore
+storage/framework/views/*
+!storage/framework/views/.gitignore
+storage/logs/*
+!storage/logs/.gitignore
+
+# Tooling & editors
+.phpunit.cache
+.phpunit.result.cache
+.phpactor.json
+.fleet
+.idea
+.nova
+.vscode
+.zed

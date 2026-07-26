@@ -1,0 +1,164 @@
+# Local development stack.
+#
+#   ./launchdev.sh                      bring everything up and drop into a shell
+#   docker compose -f compose.dev.yml up -d
+#
+# The project directory is bind-mounted into every PHP container, so edits on
+# the host take effect immediately. Database credentials are read from .env;
+# only the host names are overridden here, so .env keeps working outside Docker.
+
+name: caduceus
+
+x-php-build: &php-build
+    context: .
+    dockerfile: ./docker/common/Dockerfile
+    args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+        XDEBUG_ENABLED: ${XDEBUG_ENABLED:-true}
+        XDEBUG_HOST: ${XDEBUG_HOST:-host.docker.internal}
+        XDEBUG_IDE_KEY: ${XDEBUG_IDE_KEY:-DOCKER}
+
+x-app-env: &app-env
+    DB_HOST: postgres
+    DB_PORT: 5432
+    REDIS_HOST: redis
+    REDIS_PORT: 6379
+
+services:
+    nginx:
+        image: nginx:alpine
+        ports:
+            - "${APP_PORT:-8000}:8000"
+        volumes:
+            - .:/var/www
+            - ./docker/development/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+        networks:
+            - caduceus
+        depends_on:
+            php-fpm:
+                condition: service_started
+
+    php-fpm:
+        # php-fpm/queue and vite/workspace are each one image used twice; the
+        # explicit tags stop Compose from building near-identical copies of it.
+        image: caduceus-app:dev
+        build:
+            <<: *php-build
+            target: development
+        user: "${UID:-1000}:${GID:-1000}"
+        environment: *app-env
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
+        volumes:
+            - .:/var/www
+        networks:
+            - caduceus
+        depends_on:
+            postgres:
+                condition: service_healthy
+
+    queue:
+        image: caduceus-app:dev
+        build:
+            <<: *php-build
+            target: development
+        command: php artisan queue:listen --tries=3 --timeout=90
+        user: "${UID:-1000}:${GID:-1000}"
+        environment: *app-env
+        volumes:
+            - .:/var/www
+        networks:
+            - caduceus
+        depends_on:
+            postgres:
+                condition: service_healthy
+
+    vite:
+        image: caduceus-workspace:dev
+        build:
+            <<: *php-build
+            target: workspace
+        # Wayfinder shells out to artisan during the Vite build, which is why
+        # the dev server runs from the workspace image instead of plain Node.
+        command: sh -c "pnpm install --frozen-lockfile && pnpm run dev"
+        user: "${UID:-1000}:${GID:-1000}"
+        working_dir: /var/www
+        environment:
+            <<: *app-env
+            # Tells laravel-vite-plugin it is containerised: it then binds to
+            # 0.0.0.0 and writes http://localhost:<port> into public/hot, which
+            # is the address the browser can actually reach.
+            LARAVEL_SAIL: 1
+            VITE_PORT: 5173
+        ports:
+            - "${VITE_PORT:-5173}:5173"
+        volumes:
+            - .:/var/www
+            - node-modules:/var/www/node_modules
+            - pnpm-store:/var/www/.pnpm-store
+        networks:
+            - caduceus
+
+    workspace:
+        image: caduceus-workspace:dev
+        build:
+            <<: *php-build
+            target: workspace
+        tty: true
+        stdin_open: true
+        user: "${UID:-1000}:${GID:-1000}"
+        working_dir: /var/www
+        environment: *app-env
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
+        volumes:
+            - .:/var/www
+            - node-modules:/var/www/node_modules
+            - pnpm-store:/var/www/.pnpm-store
+        networks:
+            - caduceus
+
+    postgres:
+        image: postgres:17
+        ports:
+            # Not 5432 by default: that port is usually taken by a locally
+            # installed PostgreSQL.
+            - "${DB_FORWARD_PORT:-5433}:5432"
+        environment:
+            POSTGRES_DB: ${DB_DATABASE:-caduceus}
+            POSTGRES_USER: ${DB_USERNAME:-caduceus}
+            POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in your .env file}
+        volumes:
+            - postgres-data:/var/lib/postgresql/data
+        networks:
+            - caduceus
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-caduceus} -d ${DB_DATABASE:-caduceus}"]
+            interval: 5s
+            timeout: 5s
+            retries: 10
+
+    redis:
+        image: redis:alpine
+        networks:
+            - caduceus
+        healthcheck:
+            test: ["CMD", "redis-cli", "ping"]
+            interval: 10s
+            timeout: 5s
+            retries: 3
+
+networks:
+    caduceus:
+
+volumes:
+    postgres-data:
+    # Kept out of the bind mount so the container's install never clobbers the
+    # one on the host.
+    node-modules:
+    # pnpm puts its content-addressable store next to the workspace when its
+    # home directory sits on another filesystem — which, with node_modules on a
+    # volume, it always does. Mounting over that path keeps a few hundred MB of
+    # store out of the project directory (and out of the build context).
+    pnpm-store:
